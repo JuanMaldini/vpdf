@@ -10,7 +10,7 @@ pestaña del usuario.
 | --- | --- | --- |
 | **PDF** | [`ts-pdf`](https://github.com/yermolim/ts-pdf) (pdf.js) | Render completo. Al hacer clic en una anotación se abre su nota (autor + texto) en una tarjeta. Crear/editar anotaciones está deshabilitado. |
 | **PPTX** | [`pptx-preview`](https://www.npmjs.com/package/pptx-preview) | Render completo (texto, imágenes, tablas, formas, gráficos). Las notas del orador se extraen aparte y se muestran en un panel lateral. |
-| **ODP** | Parser propio (`src/lib/odf.ts`) | Reconstrucción por geometría: cada elemento se posiciona en % del tamaño de página real del master. Se recuperan texto, listas, tablas e imágenes. **No** se reproduce el estilo (fuentes, colores, rellenos, bordes). |
+| **ODP** | Parser propio (`src/lib/odf.ts` + `odfStyles.ts`) | Reconstrucción por geometría y estilo: posición en % del tamaño de página real del master, y fuente/tamaño/color/negrita/cursiva/subrayado, alineación, relleno, borde y alineación vertical resueltos desde las hojas de estilo. Texto, listas, tablas, imágenes y conectores/líneas. |
 | **PPT** (97-2003) | Extractor propio (`src/lib/legacyPpt.ts`) | Solo texto, best-effort. El contenedor binario OLE/CFB no tiene ninguna librería JS que lo parsee del todo, así que se recorre el stream de records y se agrupa el texto por diapositiva. Sin imágenes, formas ni diseño. |
 
 El tipo se detecta por **firma binaria**, no por extensión ni MIME
@@ -45,6 +45,14 @@ Hay archivos de prueba reales en `test/` (PDF, PPTX y ODP).
 - **Cada visor es un chunk aparte** (`React.lazy`). Las dependencias pesadas
   (pdf.js, pptx-preview + echarts, cfb) solo se descargan cuando se abre ese
   formato, así que el bundle inicial es ~90 kB gzip en vez de ~850 kB.
-- **Limitación conocida:** `pptx-preview` renderiza de forma síncrona en el
-  hilo principal, así que un PPTX grande (~10 MB) congela la pestaña unos
-  segundos mientras construye el DOM de las diapositivas.
+- **El PPTX se renderiza por lotes.** `preview()` de pptx-preview es, en modo
+  lista, `load()` seguido de un `for` síncrono sobre todas las diapositivas;
+  ese bucle congelaba la pestaña ~8 s en un deck de 10 MB. En su lugar
+  llamamos a `load()` y conducimos nosotros `htmlRender.renderSlide(i)`
+  cediendo el hilo entre diapositivas, con una barra de progreso. Medido en
+  el mismo deck: **bloqueo máximo de 84 ms**, ninguno por encima de 100 ms.
+- **Las medidas del ODP se expresan en `cqw`.** El documento trae tamaños
+  absolutos (cm/pt) pero la diapositiva se dibuja al ancho que quepa, así que
+  todo (fuentes, padding, bordes) se convierte a porcentaje del contenedor.
+  Ojo: una unidad de container query **no se puede usar sobre el propio
+  contenedor** — resuelve contra el viewport, no contra sí mismo.

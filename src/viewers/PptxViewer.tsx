@@ -144,6 +144,9 @@ function resolvePartPath(target: string): string {
 function PptxViewer({ buffer, zip, onError }: PptxViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [notes, setNotes] = useState<Map<number, string>>(new Map());
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     const wrapper = containerRef.current;
@@ -167,16 +170,45 @@ function PptxViewer({ buffer, zip, onError }: PptxViewerProps) {
 
     (async () => {
       try {
+        // Notes are pure data work on the already-inflated zip and never
+        // touch the DOM, so this is started first: its async inflates then
+        // interleave with the render loop's yields below instead of adding
+        // a serial tail once the slides are done.
+        const notesPromise = extractNotes(zip).catch(
+          () => new Map<number, string>(),
+        );
+
+        // preview() in "list" mode is load() followed by a synchronous
+        // `for (i..slides.length) renderSlide(i)`. That single loop is what
+        // froze the tab for ~8s on a 10MB deck. load() stops right before
+        // it — pptx parsed, HtmlRender built, nothing painted — so we can
+        // drive the same loop ourselves and yield between slides.
         // pptx-preview inflates the archive itself and only accepts raw
         // bytes, so it gets the buffer while the notes pass reuses the zip
         // App already loaded during type detection.
-        await previewer.preview(buffer);
+        await previewer.load(buffer);
         if (cancelled) return;
 
-        const extracted = await extractNotes(zip);
-        if (!cancelled) setNotes(extracted);
+        const total = previewer.slideCount ?? 0;
+        setProgress({ done: 0, total });
+
+        for (let index = 0; index < total; index++) {
+          previewer.htmlRender.renderSlide(index);
+          if (cancelled) return;
+          setProgress({ done: index + 1, total });
+          // Hand the thread back so the browser paints the slide just built
+          // and processes input. setTimeout rather than requestAnimationFrame
+          // because rAF stops firing in a background tab, which would stall
+          // the deck half-rendered if the user switches away mid-load.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (cancelled) return;
+        }
+
+        setProgress(null);
+        setNotes(await notesPromise);
       } catch (err) {
         if (!cancelled) {
+          setProgress(null);
           onError(
             err instanceof Error
               ? `No se pudo renderizar el PPTX: ${err.message}`
@@ -201,6 +233,24 @@ function PptxViewer({ buffer, zip, onError }: PptxViewerProps) {
 
   return (
     <div className="pptx-viewer">
+      {/* Transient hairline at the very top: the deck now appears slide by
+          slide, so this is the only cue for how much is still coming. It
+          removes itself once the last slide lands. */}
+      {progress && progress.total > 0 && (
+        <div
+          className="pptx-viewer-progress"
+          role="progressbar"
+          aria-valuenow={progress.done}
+          aria-valuemin={0}
+          aria-valuemax={progress.total}
+          aria-label="Renderizando diapositivas"
+        >
+          <div
+            className="pptx-viewer-progress-bar"
+            style={{ width: `${(progress.done / progress.total) * 100}%` }}
+          />
+        </div>
+      )}
       <div ref={containerRef} className="pptx-viewer-slides" />
       {noteEntries.length > 0 && (
         <div className="pptx-viewer-notes">

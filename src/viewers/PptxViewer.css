@@ -12,6 +12,22 @@
   padding: 24px 0 48px;
 }
 
+.pptx-viewer-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  height: 2px;
+  background: rgba(91, 141, 239, 0.2);
+}
+
+.pptx-viewer-progress-bar {
+  height: 100%;
+  background: #5b8def;
+  transition: width 0.12s linear;
+}
+
 /* pptx-preview's own "list" mode wraps every slide in a fixed-height,
    internally-scrolling div. That creates a scrollbar-inside-a-scrollbar
    effect (and clips slides mid-render until scrolled). Force it to lay

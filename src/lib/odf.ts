@@ -1,12 +1,24 @@
 import type JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
+import {
+  attrsOf,
+  childrenOf,
+  findDirect,
+  findAllDeep,
+  parseLengthCm,
+  tagOf,
+  type PNode,
+} from "./odfXml";
+import {
+  buildStyleIndex,
+  parsePageLayouts,
+  type GraphicStyle,
+  type ParagraphStyle,
+  type StyleIndex,
+  type TextStyle,
+} from "./odfStyles";
 
-// fast-xml-parser's preserveOrder output: each node is an object with a
-// single tag-name key (its children array) plus an optional ":@" key
-// holding that tag's attributes. Using preserveOrder (instead of the
-// default collapsed object tree) keeps text runs, line breaks and nested
-// shapes in document order, which paragraph/table extraction needs.
-type PNode = Record<string, unknown>;
+export type { GraphicStyle, ParagraphStyle, TextStyle } from "./odfStyles";
 
 export interface Geometry {
   /** All in cm, in the slide's own page coordinate space. */
@@ -16,10 +28,25 @@ export interface Geometry {
   height: number;
 }
 
+/** A run of characters sharing one character style. */
+export interface RichSpan {
+  text: string;
+  style: TextStyle;
+}
+
+export interface RichParagraph {
+  spans: RichSpan[];
+  style: ParagraphStyle;
+  /** Bullet prefix and nesting level for text:list items. */
+  bullet?: string;
+  level: number;
+}
+
 export interface TextElement {
   kind: "text";
-  lines: string[];
+  paragraphs: RichParagraph[];
   geometry?: Geometry;
+  graphic: GraphicStyle;
 }
 
 export interface ImageElement {
@@ -35,17 +62,36 @@ export interface ImageElement {
 
 export interface TableElement {
   kind: "table";
-  rows: string[][];
+  rows: RichParagraph[][][];
   geometry?: Geometry;
+  graphic: GraphicStyle;
 }
 
 export interface ShapeElement {
   kind: "shape";
-  lines: string[];
+  paragraphs: RichParagraph[];
   geometry?: Geometry;
+  graphic: GraphicStyle;
 }
 
-export type SlideElement = TextElement | ImageElement | TableElement | ShapeElement;
+/** draw:line and draw:connector position themselves with endpoints rather
+ * than a box, so they get their own element type instead of being forced
+ * into a Geometry they don't have. All values in cm, page coordinates. */
+export interface LineElement {
+  kind: "line";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  graphic: GraphicStyle;
+}
+
+export type SlideElement =
+  | TextElement
+  | ImageElement
+  | TableElement
+  | ShapeElement
+  | LineElement;
 
 export interface ParsedSlide {
   index: number;
@@ -53,7 +99,7 @@ export interface ParsedSlide {
   pageWidthCm: number;
   pageHeightCm: number;
   elements: SlideElement[];
-  notes: string[];
+  notes: RichParagraph[];
 }
 
 const DRAWABLE_SHAPE_TAGS = new Set([
@@ -73,96 +119,92 @@ const DRAWABLE_SHAPE_TAGS = new Set([
 const DEFAULT_PAGE_WIDTH_CM = 33.867;
 const DEFAULT_PAGE_HEIGHT_CM = 19.05;
 
-function tagOf(node: PNode): string | undefined {
-  return Object.keys(node).find((k) => k !== ":@");
-}
+/** Flattens a paragraph's inline content into styled spans, in document
+ * order. Nested text:span elements each narrow the style further, so the
+ * caller's style is threaded down and merged rather than replaced. */
+function collectSpans(
+  nodes: PNode[],
+  styles: StyleIndex,
+  inherited: TextStyle,
+  out: RichSpan[] = [],
+): RichSpan[] {
+  const push = (text: string, style: TextStyle) => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    // Merge adjacent runs that resolved to the same formatting, so a
+    // paragraph split across a dozen identical spans stays one DOM node.
+    if (last && last.style === style) last.text += text;
+    else out.push({ text, style });
+  };
 
-function childrenOf(node: PNode): PNode[] {
-  // "#text" nodes hold a raw string value (not a children array) under
-  // that key, so they must be excluded before indexing into the tag key.
-  if ("#text" in node) return [];
-  const t = tagOf(node);
-  return t ? ((node[t] as PNode[]) ?? []) : [];
-}
-
-function attrsOf(node: PNode): Record<string, string> {
-  return (node[":@"] as Record<string, string>) ?? {};
-}
-
-function findDirect(nodes: PNode[], tag: string): PNode[] {
-  return nodes.filter((n) => tagOf(n) === tag);
-}
-
-function findAllDeep(nodes: PNode[], tag: string): PNode[] {
-  const out: PNode[] = [];
-  for (const n of nodes) {
-    const t = tagOf(n);
-    if (t === tag) out.push(n);
-    if (t) out.push(...findAllDeep(childrenOf(n), tag));
-  }
-  return out;
-}
-
-function collectText(nodes: PNode[]): string {
-  let out = "";
-  for (const n of nodes) {
-    if ("#text" in n) {
-      out += String(n["#text"]);
+  for (const node of nodes) {
+    if ("#text" in node) {
+      push(String(node["#text"]), inherited);
       continue;
     }
-    const t = tagOf(n);
-    if (!t) continue;
-    if (t === "text:line-break") {
-      out += "\n";
-    } else if (t === "text:tab") {
-      out += "\t";
-    } else if (t === "text:s") {
-      const count = Number(attrsOf(n)["@_text:c"] ?? 1);
-      out += " ".repeat(Math.max(1, count));
+    const tag = tagOf(node);
+    if (!tag) continue;
+
+    if (tag === "text:line-break") {
+      push("\n", inherited);
+    } else if (tag === "text:tab") {
+      push("\t", inherited);
+    } else if (tag === "text:s") {
+      const count = Number(attrsOf(node)["@_text:c"] ?? 1);
+      push(" ".repeat(Math.max(1, count)), inherited);
+    } else if (tag === "text:span") {
+      const own = styles.text(attrsOf(node)["@_text:style-name"]);
+      collectSpans(childrenOf(node), styles, { ...inherited, ...own }, out);
     } else {
-      out += collectText(childrenOf(n));
+      collectSpans(childrenOf(node), styles, inherited, out);
     }
   }
   return out;
 }
 
-function paragraphsToLines(nodes: PNode[], indent = ""): string[] {
-  const lines: string[] = [];
-  for (const n of nodes) {
-    const t = tagOf(n);
-    if (t === "text:p") {
-      lines.push(indent + collectText(childrenOf(n)));
-    } else if (t === "text:list") {
-      for (const item of findDirect(childrenOf(n), "text:list-item")) {
-        lines.push(...paragraphsToLines(childrenOf(item), `${indent}• `));
+interface ParagraphContext {
+  /** Style applied to paragraphs that declare none of their own, from the
+   * frame's draw:text-style-name. */
+  defaultParagraphStyle?: string;
+  level: number;
+  bullet?: string;
+}
+
+function paragraphsToRich(
+  nodes: PNode[],
+  styles: StyleIndex,
+  context: ParagraphContext,
+): RichParagraph[] {
+  const paragraphs: RichParagraph[] = [];
+  for (const node of nodes) {
+    const tag = tagOf(node);
+
+    if (tag === "text:p" || tag === "text:h") {
+      const styleName =
+        attrsOf(node)["@_text:style-name"] ?? context.defaultParagraphStyle;
+      paragraphs.push({
+        spans: collectSpans(childrenOf(node), styles, styles.text(styleName)),
+        style: styles.paragraph(styleName),
+        bullet: context.bullet,
+        level: context.level,
+      });
+    } else if (tag === "text:list") {
+      for (const item of findDirect(childrenOf(node), "text:list-item")) {
+        paragraphs.push(
+          ...paragraphsToRich(childrenOf(item), styles, {
+            ...context,
+            level: context.level + 1,
+            bullet: "•",
+          }),
+        );
       }
     }
   }
-  return lines;
+  return paragraphs;
 }
 
-/** ODF length attributes (svg:x, svg:width, ...) carry a unit suffix;
- * normalizing everything to cm lets element and page geometry be compared
- * directly regardless of which unit the producing app used. */
-function parseLengthCm(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const match = value.match(/^(-?[\d.]+)\s*(cm|mm|in|pt|pc|px)?$/);
-  if (!match) return undefined;
-  const num = parseFloat(match[1]);
-  switch (match[2]) {
-    case "mm":
-      return num / 10;
-    case "in":
-      return num * 2.54;
-    case "pt":
-      return (num / 72) * 2.54;
-    case "pc":
-      return (num / 6) * 2.54;
-    case "px":
-      return (num / 96) * 2.54;
-    default:
-      return num;
-  }
+function hasText(paragraphs: RichParagraph[]): boolean {
+  return paragraphs.some((p) => p.spans.some((s) => s.text.trim().length > 0));
 }
 
 function extractGeometry(attrs: Record<string, string>): Geometry | undefined {
@@ -176,28 +218,56 @@ function extractGeometry(attrs: Record<string, string>): Geometry | undefined {
   return { x, y, width, height };
 }
 
-function extractTable(tableNode: PNode, geometry?: Geometry): TableElement {
-  const rows: string[][] = [];
+function extractTable(
+  tableNode: PNode,
+  styles: StyleIndex,
+  graphic: GraphicStyle,
+  geometry?: Geometry,
+): TableElement {
+  const rows: RichParagraph[][][] = [];
   for (const row of findDirect(childrenOf(tableNode), "table:table-row")) {
-    const cells: string[] = [];
+    const cells: RichParagraph[][] = [];
     for (const cell of findDirect(childrenOf(row), "table:table-cell")) {
-      cells.push(paragraphsToLines(childrenOf(cell)).join("\n"));
+      cells.push(paragraphsToRich(childrenOf(cell), styles, { level: 0 }));
     }
     rows.push(cells);
   }
-  return { kind: "table", rows, geometry };
+  return { kind: "table", rows, geometry, graphic };
 }
 
 /** Extracts whatever a draw:frame (or a bare shape) actually contains, so
- * nothing inside it is silently dropped even though fill/border/font
- * styling isn't reproduced. Position/size (from the frame or shape's own
- * svg:x/y/width/height) IS carried through, so the overall composition of
- * the slide is preserved. */
-function extractDrawableElement(node: PNode): SlideElement | null {
+ * nothing inside it is silently dropped. Position/size and the resolved
+ * fill/border/font styling are both carried through, so the slide's
+ * composition and its look are preserved. */
+function extractDrawableElement(node: PNode, styles: StyleIndex): SlideElement | null {
   const tag = tagOf(node);
   if (!tag) return null;
+  const attrs = attrsOf(node);
   const children = childrenOf(node);
-  const geometry = extractGeometry(attrsOf(node));
+  const geometry = extractGeometry(attrs);
+  const graphic = styles.graphic(
+    attrs["@_draw:style-name"] ?? attrs["@_presentation:style-name"],
+  );
+  const context: ParagraphContext = {
+    defaultParagraphStyle: attrs["@_draw:text-style-name"],
+    level: 0,
+  };
+
+  if (tag === "draw:line" || tag === "draw:connector") {
+    const x1 = parseLengthCm(attrs["@_svg:x1"]);
+    const y1 = parseLengthCm(attrs["@_svg:y1"]);
+    const x2 = parseLengthCm(attrs["@_svg:x2"]);
+    const y2 = parseLengthCm(attrs["@_svg:y2"]);
+    if (x1 !== undefined && y1 !== undefined && x2 !== undefined && y2 !== undefined) {
+      return { kind: "line", x1, y1, x2, y2, graphic };
+    }
+    return null;
+  }
+
+  // Everything below is positioned by its box. Without one there is nothing
+  // sensible to place, and emitting it anyway made it a full-width block in
+  // normal flow that sat across the middle of the slide.
+  if (!geometry) return null;
 
   const image = findDirect(children, "draw:image")[0];
   if (image) {
@@ -206,25 +276,33 @@ function extractDrawableElement(node: PNode): SlideElement | null {
     // An image with no xlink:href carries its bytes inline as base64 instead
     // (LibreOffice writes this form for freshly pasted, not-yet-saved images).
     const binary = findDirect(childrenOf(image), "office:binary-data")[0];
-    const binaryData = binary ? collectText(childrenOf(binary)).trim() : "";
+    const binaryData = binary
+      ? collectSpans(childrenOf(binary), styles, {})
+          .map((s) => s.text)
+          .join("")
+          .trim()
+      : "";
     return binaryData ? { kind: "image", binaryData, geometry } : null;
   }
 
   const table = findDirect(children, "table:table")[0];
-  if (table) return extractTable(table, geometry);
+  if (table) return extractTable(table, styles, graphic, geometry);
 
   const textBox = findDirect(children, "draw:text-box")[0];
   const textContainer = textBox ? childrenOf(textBox) : children;
-  const lines = paragraphsToLines(textContainer);
+  const paragraphs = paragraphsToRich(textContainer, styles, context);
 
   if (tag === "draw:frame") {
-    return lines.length ? { kind: "text", lines, geometry } : null;
+    return hasText(paragraphs)
+      ? { kind: "text", paragraphs, geometry, graphic }
+      : null;
   }
 
-  return { kind: "shape", lines, geometry };
+  // A bare shape is kept even with no text: its fill/stroke is the content.
+  return { kind: "shape", paragraphs, geometry, graphic };
 }
 
-function extractSlideElements(pageChildren: PNode[]): SlideElement[] {
+function extractSlideElements(pageChildren: PNode[], styles: StyleIndex): SlideElement[] {
   const elements: SlideElement[] = [];
   for (const child of pageChildren) {
     const tag = tagOf(child);
@@ -236,63 +314,40 @@ function extractSlideElements(pageChildren: PNode[]): SlideElement[] {
       // ODF keeps child shapes in absolute page coordinates even inside a
       // group, so flattening the group (rather than reproducing its
       // transform) still preserves each child's on-slide position.
-      elements.push(...extractSlideElements(childrenOf(child)));
+      elements.push(...extractSlideElements(childrenOf(child), styles));
       continue;
     }
 
     if (tag === "table:table") {
-      elements.push(extractTable(child, extractGeometry(attrsOf(child))));
+      const attrs = attrsOf(child);
+      elements.push(
+        extractTable(
+          child,
+          styles,
+          styles.graphic(attrs["@_draw:style-name"]),
+          extractGeometry(attrs),
+        ),
+      );
       continue;
     }
 
     if (tag === "draw:frame" || DRAWABLE_SHAPE_TAGS.has(tag)) {
-      const el = extractDrawableElement(child);
+      const el = extractDrawableElement(child, styles);
       if (el) elements.push(el);
     }
   }
   return elements;
 }
 
-function extractNotes(pageChildren: PNode[]): string[] {
+function extractNotes(pageChildren: PNode[], styles: StyleIndex): RichParagraph[] {
   const notesNode = findDirect(pageChildren, "presentation:notes")[0];
   if (!notesNode) return [];
-  const lines: string[] = [];
+  const paragraphs: RichParagraph[] = [];
   for (const frame of findAllDeep(childrenOf(notesNode), "draw:frame")) {
-    const el = extractDrawableElement(frame);
-    if (el?.kind === "text") lines.push(...el.lines);
+    const el = extractDrawableElement(frame, styles);
+    if (el?.kind === "text") paragraphs.push(...el.paragraphs);
   }
-  return lines.filter((l) => l.trim().length > 0);
-}
-
-interface PageLayout {
-  widthCm: number;
-  heightCm: number;
-}
-
-/** Resolves each master-page's actual on-screen size (styles.xml commonly
- * defines a leftover print-oriented page-layout alongside the real
- * presentation one — the master-page → page-layout-name chain is what
- * actually governs a given slide, not just "the first page-layout"). */
-function parsePageLayouts(stylesXml: string, parser: XMLParser): Map<string, PageLayout> {
-  const root = parser.parse(stylesXml) as PNode[];
-  const layoutsByName = new Map<string, PageLayout>();
-  for (const layout of findAllDeep(root, "style:page-layout")) {
-    const name = attrsOf(layout)["@_style:name"];
-    const props = findDirect(childrenOf(layout), "style:page-layout-properties")[0];
-    if (!name || !props) continue;
-    const widthCm = parseLengthCm(attrsOf(props)["@_fo:page-width"]);
-    const heightCm = parseLengthCm(attrsOf(props)["@_fo:page-height"]);
-    if (widthCm && heightCm) layoutsByName.set(name, { widthCm, heightCm });
-  }
-
-  const pageLayoutByMasterPage = new Map<string, PageLayout>();
-  for (const masterPage of findAllDeep(root, "style:master-page")) {
-    const masterName = attrsOf(masterPage)["@_style:name"];
-    const layoutName = attrsOf(masterPage)["@_style:page-layout-name"];
-    const layout = layoutName ? layoutsByName.get(layoutName) : undefined;
-    if (masterName && layout) pageLayoutByMasterPage.set(masterName, layout);
-  }
-  return pageLayoutByMasterPage;
+  return paragraphs.filter((p) => p.spans.some((s) => s.text.trim().length > 0));
 }
 
 export interface ParsedOdp {
@@ -353,9 +408,10 @@ export async function parseOdp(zip: JSZip): Promise<ParsedOdp> {
   const root = parser.parse(contentXml) as PNode[];
 
   const stylesXml = await zip.file("styles.xml")?.async("string");
-  const pageLayoutByMasterPage = stylesXml
-    ? parsePageLayouts(stylesXml, parser)
-    : new Map<string, PageLayout>();
+  const stylesRoot = stylesXml ? (parser.parse(stylesXml) as PNode[]) : [];
+
+  const styles = buildStyleIndex(root, stylesRoot);
+  const pageLayoutByMasterPage = parsePageLayouts(stylesRoot);
 
   const pages = findAllDeep(root, "draw:page");
   const slides: ParsedSlide[] = pages.map((page, index) => {
@@ -367,8 +423,8 @@ export async function parseOdp(zip: JSZip): Promise<ParsedOdp> {
       name: attrsOf(page)["@_draw:name"],
       pageWidthCm: layout?.widthCm ?? DEFAULT_PAGE_WIDTH_CM,
       pageHeightCm: layout?.heightCm ?? DEFAULT_PAGE_HEIGHT_CM,
-      elements: extractSlideElements(children),
-      notes: extractNotes(children),
+      elements: extractSlideElements(children, styles),
+      notes: extractNotes(children, styles),
     };
   });
 

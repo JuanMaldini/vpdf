@@ -24,20 +24,46 @@
   background: #ffffff;
   overflow: hidden;
   flex-shrink: 0;
+  /* Establishes the reference width for every cqw length inside: all
+     document sizes (fonts, padding, borders) are expressed relative to the
+     slide so they scale with it. */
   container-type: inline-size;
 }
 
 .odp-element {
-  overflow: hidden;
+  /* Visible, not hidden: ODF frames are sized for the producing app's exact
+     font metrics, so text reflowed with a substitute font routinely needs a
+     few pixels more than the box. Clipping would silently drop the tail of a
+     review comment — overlapping slightly is the better failure mode here. */
+  overflow: visible;
   color: #1a1a1a;
-  font-size: 1.1cqw;
+  /* Column flex so a frame's draw:textarea-vertical-align can be honoured
+     via justify-content. Defaults to top, which is Impress's default. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .odp-element p {
   margin: 0;
-  line-height: 1.3;
+  line-height: 1.25;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.odp-bullet {
+  opacity: 0.7;
+}
+
+/* Lines/connectors span the whole slide and carry their own page-coordinate
+   viewBox, so they must not intercept pointer events over other elements. */
+.odp-line {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
 }
 
 .odp-element img {
@@ -58,7 +84,6 @@
   padding: 2px 6px;
   vertical-align: top;
   white-space: pre-wrap;
-  font-size: 0.9em;
 }
 
 .odp-notes {
@@ -66,6 +91,9 @@
   color: #8a8d98;
   font-size: 0.85rem;
   line-height: 1.5;
+  /* Same width as the slide, so the cqw font sizes the parser produced
+     resolve against the same reference here as they do on the canvas. */
+  container-type: inline-size;
 }
 
 .odp-notes p {
