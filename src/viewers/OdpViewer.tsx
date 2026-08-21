@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { parseOdp, releaseOdpImageUrls, type ParsedOdp, type SlideElement } from "../lib/odf";
+import { Fragment, useEffect, useState } from "react";
+import { parseOdp, releaseOdpImageUrls, type Geometry, type ParsedOdp, type SlideElement } from "../lib/odf";
 import "./OdpViewer.css";
 
 interface OdpViewerProps {
@@ -7,11 +7,36 @@ interface OdpViewerProps {
   onError: (message: string) => void;
 }
 
-function SlideElementView({ element }: { element: SlideElement }) {
+/** Percentages of the slide's own page size, so the element lands in the
+ * same relative spot regardless of how big the slide canvas is rendered. */
+function geometryStyle(geometry: Geometry | undefined, pageWidthCm: number, pageHeightCm: number) {
+  if (!geometry) return undefined;
+  return {
+    position: "absolute" as const,
+    left: `${(geometry.x / pageWidthCm) * 100}%`,
+    top: `${(geometry.y / pageHeightCm) * 100}%`,
+    width: `${(geometry.width / pageWidthCm) * 100}%`,
+    height: `${(geometry.height / pageHeightCm) * 100}%`,
+  };
+}
+
+function SlideElementView({
+  element,
+  pageWidthCm,
+  pageHeightCm,
+}: {
+  element: SlideElement;
+  pageWidthCm: number;
+  pageHeightCm: number;
+}) {
+  const style = geometryStyle(element.geometry, pageWidthCm, pageHeightCm);
+
   switch (element.kind) {
     case "text":
+    case "shape":
+      if (element.lines.length === 0) return null;
       return (
-        <div className="odp-element odp-element-text">
+        <div className="odp-element" style={style}>
           {element.lines.map((line, i) => (
             <p key={i}>{line || " "}</p>
           ))}
@@ -19,13 +44,13 @@ function SlideElementView({ element }: { element: SlideElement }) {
       );
     case "image":
       return element.src ? (
-        <div className="odp-element odp-element-image">
+        <div className="odp-element" style={style}>
           <img src={element.src} alt="" loading="lazy" />
         </div>
       ) : null;
     case "table":
       return (
-        <div className="odp-element odp-element-table">
+        <div className="odp-element" style={style}>
           <table>
             <tbody>
               {element.rows.map((row, r) => (
@@ -37,15 +62,6 @@ function SlideElementView({ element }: { element: SlideElement }) {
               ))}
             </tbody>
           </table>
-        </div>
-      );
-    case "shape":
-      return (
-        <div className="odp-element odp-element-shape">
-          <div className="odp-element-shape-label">{element.shapeType}</div>
-          {element.lines.map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
         </div>
       );
   }
@@ -87,35 +103,29 @@ function OdpViewer({ file, onError }: OdpViewerProps) {
 
   return (
     <div className="odp-viewer">
-      <div className="odp-viewer-banner">
-        Vista de solo lectura extraída del .odp: texto, imágenes, tablas y
-        formas de cada diapositiva, en orden. El diseño original no se
-        reproduce de forma exacta.
-      </div>
       {parsed.slides.map((slide) => (
-        <div key={slide.index} className="odp-slide">
-          <div className="odp-slide-header">
-            Diapositiva {slide.index + 1}
-            {slide.name ? ` — ${slide.name}` : ""}
-          </div>
-          <div className="odp-slide-body">
-            {slide.elements.length === 0 ? (
-              <div className="odp-slide-empty">Sin contenido detectado.</div>
-            ) : (
-              slide.elements.map((element, i) => (
-                <SlideElementView key={i} element={element} />
-              ))
-            )}
+        <Fragment key={slide.index}>
+          <div
+            className="odp-slide"
+            style={{ aspectRatio: `${slide.pageWidthCm} / ${slide.pageHeightCm}` }}
+          >
+            {slide.elements.map((element, i) => (
+              <SlideElementView
+                key={i}
+                element={element}
+                pageWidthCm={slide.pageWidthCm}
+                pageHeightCm={slide.pageHeightCm}
+              />
+            ))}
           </div>
           {slide.notes.length > 0 && (
-            <div className="odp-slide-notes">
-              <div className="odp-slide-notes-title">Notas del orador</div>
+            <div className="odp-notes">
               {slide.notes.map((line, i) => (
                 <p key={i}>{line}</p>
               ))}
             </div>
           )}
-        </div>
+        </Fragment>
       ))}
     </div>
   );
