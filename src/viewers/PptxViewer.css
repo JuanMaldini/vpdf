@@ -1,0 +1,65 @@
+.pptx-viewer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #14151a;
+}
+
+.pptx-viewer-slides {
+  flex: 1;
+  padding: 24px 0 48px;
+}
+
+/* pptx-preview's own "list" mode wraps every slide in a fixed-height,
+   internally-scrolling div. That creates a scrollbar-inside-a-scrollbar
+   effect (and clips slides mid-render until scrolled). Force it to lay
+   its slides out inline so the page itself owns the only scrollbar. */
+.pptx-viewer-slides :where(.pptx-preview-wrapper) {
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.pptx-viewer-notes {
+  width: 320px;
+  flex-shrink: 0;
+  padding: 20px;
+  background: #191c24;
+  border-left: 1px solid #3a3d46;
+  color: #e6e6e6;
+}
+
+.pptx-viewer-notes-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a8d98;
+  margin-bottom: 16px;
+}
+
+.pptx-viewer-note {
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #2a2d36;
+}
+
+.pptx-viewer-note:last-child {
+  border-bottom: none;
+}
+
+.pptx-viewer-note-slide {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #5b8def;
+  margin-bottom: 6px;
+}
+
+.pptx-viewer-note-text {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

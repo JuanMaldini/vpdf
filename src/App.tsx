@@ -1,5 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TsPdfViewer } from "ts-pdf";
+import { detectFileType, type DetectedFileType } from "./lib/fileType";
+import PptxViewer from "./viewers/PptxViewer";
+import OdpViewer from "./viewers/OdpViewer";
+import LegacyPptViewer from "./viewers/LegacyPptViewer";
 import "./App.css";
 
 let containerInstanceCounter = 0;
@@ -9,11 +13,17 @@ interface AnnotationNote {
   text: string;
 }
 
+type ActiveViewer = Extract<DetectedFileType, "pdf" | "pptx" | "odp" | "ppt-legacy">;
+
+const UNSUPPORTED_MESSAGE =
+  "Formato no soportado. Se aceptan PDF, PPTX, PPT y ODP.";
+
 function App() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<TsPdfViewer | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [hasFile, setHasFile] = useState(false);
+  const [activeViewer, setActiveViewer] = useState<ActiveViewer | null>(null);
+  const [activeFile, setActiveFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<AnnotationNote | null>(null);
@@ -78,21 +88,34 @@ function App() {
     };
   }, []);
 
-  const openFile = async (file: File) => {
-    const isPdf =
-      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-    if (!isPdf) {
-      setError("El archivo seleccionado no es un PDF.");
-      return;
-    }
+  const handleViewerError = useCallback((message: string) => {
+    setError(message);
+    setActiveViewer(null);
+    setActiveFile(null);
+  }, []);
 
-    try {
-      setError(null);
-      setNote(null);
-      await viewerRef.current?.openPdfAsync(file);
-      setHasFile(true);
-    } catch {
-      setError("No se pudo abrir el PDF.");
+  const openFile = async (file: File) => {
+    setError(null);
+    const kind = await detectFileType(file);
+
+    switch (kind) {
+      case "pdf":
+        try {
+          setNote(null);
+          await viewerRef.current?.openPdfAsync(file);
+          setActiveViewer("pdf");
+        } catch {
+          setError("No se pudo abrir el PDF.");
+        }
+        break;
+      case "pptx":
+      case "odp":
+      case "ppt-legacy":
+        setActiveFile(file);
+        setActiveViewer(kind);
+        break;
+      default:
+        setError(UNSUPPORTED_MESSAGE);
     }
   };
 
@@ -123,6 +146,16 @@ function App() {
     <div className="app">
       <div ref={wrapperRef} className="pdf-container" />
 
+      {activeViewer === "pptx" && activeFile && (
+        <PptxViewer file={activeFile} onError={handleViewerError} />
+      )}
+      {activeViewer === "odp" && activeFile && (
+        <OdpViewer file={activeFile} onError={handleViewerError} />
+      )}
+      {activeViewer === "ppt-legacy" && activeFile && (
+        <LegacyPptViewer file={activeFile} onError={handleViewerError} />
+      )}
+
       {note && (
         <div className="note-card">
           <button
@@ -139,7 +172,7 @@ function App() {
       )}
 
       <div
-        className={`dropzone${hasFile ? " hidden" : ""}${isDragging ? " dragging" : ""}`}
+        className={`dropzone${activeViewer ? " hidden" : ""}${isDragging ? " dragging" : ""}`}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -156,7 +189,7 @@ function App() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="application/pdf,.pdf"
+          accept="application/pdf,.pdf,.pptx,.ppt,.odp,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.presentation"
           onChange={handleFileInputChange}
           style={{ display: "none" }}
         />
