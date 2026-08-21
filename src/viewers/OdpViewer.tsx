@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
+import type JSZip from "jszip";
 import { parseOdp, releaseOdpImageUrls, type Geometry, type ParsedOdp, type SlideElement } from "../lib/odf";
 import "./OdpViewer.css";
 
 interface OdpViewerProps {
-  file: File;
+  zip: JSZip;
   onError: (message: string) => void;
 }
 
@@ -67,14 +68,14 @@ function SlideElementView({
   }
 }
 
-function OdpViewer({ file, onError }: OdpViewerProps) {
+function OdpViewer({ zip, onError }: OdpViewerProps) {
   const [parsed, setParsed] = useState<ParsedOdp | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let result: ParsedOdp | null = null;
 
-    parseOdp(file)
+    parseOdp(zip)
       .then((p) => {
         if (cancelled) {
           releaseOdpImageUrls(p);
@@ -95,7 +96,7 @@ function OdpViewer({ file, onError }: OdpViewerProps) {
       cancelled = true;
       if (result) releaseOdpImageUrls(result);
     };
-  }, [file, onError]);
+  }, [zip, onError]);
 
   if (!parsed) {
     return <div className="odp-viewer odp-viewer-loading">Leyendo diapositivas…</div>;

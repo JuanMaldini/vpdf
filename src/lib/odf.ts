@@ -1,4 +1,4 @@
-import JSZip from "jszip";
+import type JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
 
 // fast-xml-parser's preserveOrder output: each node is an object with a
@@ -24,7 +24,11 @@ export interface TextElement {
 
 export interface ImageElement {
   kind: "image";
-  href: string;
+  /** Package-relative path, when the image lives as its own zip entry. */
+  href?: string;
+  /** Inline base64 payload, when the image is embedded in the XML instead. */
+  binaryData?: string;
+  /** Object URL, resolved by parseOdp; revoke via releaseOdpImageUrls. */
   src?: string;
   geometry?: Geometry;
 }
@@ -198,7 +202,12 @@ function extractDrawableElement(node: PNode): SlideElement | null {
   const image = findDirect(children, "draw:image")[0];
   if (image) {
     const href = attrsOf(image)["@_xlink:href"];
-    return href ? { kind: "image", href, geometry } : null;
+    if (href) return { kind: "image", href, geometry };
+    // An image with no xlink:href carries its bytes inline as base64 instead
+    // (LibreOffice writes this form for freshly pasted, not-yet-saved images).
+    const binary = findDirect(childrenOf(image), "office:binary-data")[0];
+    const binaryData = binary ? collectText(childrenOf(binary)).trim() : "";
+    return binaryData ? { kind: "image", binaryData, geometry } : null;
   }
 
   const table = findDirect(children, "table:table")[0];
@@ -290,8 +299,47 @@ export interface ParsedOdp {
   slides: ParsedSlide[];
 }
 
-export async function parseOdp(file: File): Promise<ParsedOdp> {
-  const zip = await JSZip.loadAsync(file);
+/** xlink:href values are package-relative URIs, so they can be percent-encoded
+ * and/or "./"-prefixed while the zip entry name is neither. Trying the
+ * plausible spellings is cheaper (and more forgiving of the several producing
+ * apps) than assuming one canonical form. */
+function findImageEntry(zip: JSZip, href: string) {
+  const candidates = [href, href.replace(/^\.\//, "")];
+  try {
+    const decoded = decodeURIComponent(href);
+    candidates.push(decoded, decoded.replace(/^\.\//, ""));
+  } catch {
+    // Malformed percent-escapes: the raw spellings above are all we have.
+  }
+  for (const candidate of candidates) {
+    const entry = zip.file(candidate);
+    if (entry) return entry;
+  }
+  return null;
+}
+
+/** Resolves every image reference to an object URL, in parallel — an
+ * image-heavy deck holds dozens of entries and inflating them one awaited
+ * blob at a time dominates the total parse time. */
+async function resolveImages(zip: JSZip, slides: ParsedSlide[]) {
+  const images = slides
+    .flatMap((slide) => slide.elements)
+    .filter((el): el is ImageElement => el.kind === "image");
+
+  await Promise.all(
+    images.map(async (element) => {
+      if (element.binaryData) {
+        const response = await fetch(`data:;base64,${element.binaryData}`);
+        element.src = URL.createObjectURL(await response.blob());
+        return;
+      }
+      const entry = element.href ? findImageEntry(zip, element.href) : null;
+      if (entry) element.src = URL.createObjectURL(await entry.async("blob"));
+    }),
+  );
+}
+
+export async function parseOdp(zip: JSZip): Promise<ParsedOdp> {
   const contentXml = await zip.file("content.xml")?.async("string");
   if (!contentXml) {
     throw new Error("El archivo .odp no contiene content.xml");
@@ -324,21 +372,18 @@ export async function parseOdp(file: File): Promise<ParsedOdp> {
     };
   });
 
-  // Resolve every image reference to a usable object URL. Revoking these is
-  // the caller's responsibility (see releaseOdpImageUrls).
-  for (const slide of slides) {
-    for (const element of slide.elements) {
-      if (element.kind === "image") {
-        const entry = zip.file(element.href);
-        if (entry) {
-          const blob = await entry.async("blob");
-          element.src = URL.createObjectURL(blob);
-        }
-      }
-    }
+  const parsed: ParsedOdp = { slides };
+  try {
+    // Revoking these object URLs is the caller's responsibility on success
+    // (see releaseOdpImageUrls); on failure we must not leak the ones that
+    // were already created before the error.
+    await resolveImages(zip, slides);
+  } catch (err) {
+    releaseOdpImageUrls(parsed);
+    throw err;
   }
 
-  return { slides };
+  return parsed;
 }
 
 export function releaseOdpImageUrls(parsed: ParsedOdp) {

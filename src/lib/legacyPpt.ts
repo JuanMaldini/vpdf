@@ -48,7 +48,10 @@ export function extractLegacyPptText(buffer: ArrayBuffer): LegacyPptResult {
       const len = view.getUint32(offset + 4, true);
       const dataStart = offset + 8;
 
-      if (len < 0 || dataStart + len > end) break;
+      // A record claiming to run past its container means the stream is
+      // truncated or we've drifted out of alignment; salvage what was read
+      // rather than walking into garbage. (len is a Uint32, never negative.)
+      if (dataStart + len > end) break;
       const isContainer = (verInstance & 0xf) === 0xf;
 
       if (type === RT_SLIDE) {

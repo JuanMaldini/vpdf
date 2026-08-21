@@ -1,199 +1,207 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { TsPdfViewer } from "ts-pdf";
-import { detectFileType, type DetectedFileType } from "./lib/fileType";
-import PptxViewer from "./viewers/PptxViewer";
-import OdpViewer from "./viewers/OdpViewer";
-import LegacyPptViewer from "./viewers/LegacyPptViewer";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import type JSZip from "jszip";
+import { detectFile, type DetectedFileType } from "./lib/fileType";
 import "./App.css";
 
-let containerInstanceCounter = 0;
+// Each viewer drags in a heavy, format-specific dependency (ts-pdf + pdf.js,
+// pptx-preview + echarts, cfb). Loading them on demand keeps the initial
+// bundle to the shell, so opening a PDF never costs the PPTX renderer and
+// vice versa.
+const PdfViewer = lazy(() => import("./viewers/PdfViewer"));
+const PptxViewer = lazy(() => import("./viewers/PptxViewer"));
+const OdpViewer = lazy(() => import("./viewers/OdpViewer"));
+const LegacyPptViewer = lazy(() => import("./viewers/LegacyPptViewer"));
 
-interface AnnotationNote {
-  author: string;
-  text: string;
+type ViewerKind = Extract<DetectedFileType, "pdf" | "pptx" | "odp" | "ppt-legacy">;
+
+/** Everything a viewer needs, read from disk exactly once. Keeping the kind
+ * and its payload in a single object makes the "viewer selected but no file"
+ * state unrepresentable. */
+interface ViewerSource {
+  kind: ViewerKind;
+  name: string;
+  buffer: ArrayBuffer;
+  zip?: JSZip;
 }
-
-type ActiveViewer = Extract<DetectedFileType, "pdf" | "pptx" | "odp" | "ppt-legacy">;
 
 const UNSUPPORTED_MESSAGE =
   "Formato no soportado. Se aceptan PDF, PPTX, PPT y ODP.";
 
+const FILE_ACCEPT = [
+  "application/pdf",
+  ".pdf",
+  ".pptx",
+  ".ppt",
+  ".odp",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.oasis.opendocument.presentation",
+].join(",");
+
 function App() {
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const viewerRef = useRef<TsPdfViewer | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeViewer, setActiveViewer] = useState<ActiveViewer | null>(null);
-  const [activeFile, setActiveFile] = useState<File | null>(null);
+  const [source, setSource] = useState<ViewerSource | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<AnnotationNote | null>(null);
-
-  useEffect(() => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) return;
-
-    // ts-pdf looks up its container via document.querySelector(containerSelector)
-    // and attaches a shadow root that destroy() can't fully tear down, so each
-    // mount needs a brand-new DOM node with a never-reused id (relevant under
-    // StrictMode's mount/unmount/mount cycle in development).
-    const containerId = `pdf-viewer-container-${++containerInstanceCounter}`;
-    const container = document.createElement("div");
-    container.id = containerId;
-    container.className = "pdf-container";
-    wrapper.appendChild(container);
-
-    const viewer = new TsPdfViewer({
-      containerSelector: `#${containerId}`,
-      workerSource: `${import.meta.env.BASE_URL}pdf.worker.min.mjs`,
-      fileButtons: [],
-      disabledModes: ["annotation", "comparison"],
-      // Clicking an annotation (native PDF-viewer behavior) fires a "select"
-      // event with that annotation's author/note text; clicking empty space
-      // or another annotation fires it again, so this toggles automatically.
-      annotChangeCallback: (detail) => {
-        if (detail.type !== "select") return;
-        const annotation = detail.annotations[0];
-        if (annotation?.textContent) {
-          setNote({
-            author: annotation.author || "Anotación",
-            text: annotation.textContent,
-          });
-        } else {
-          setNote(null);
-        }
-      },
-    });
-    viewerRef.current = viewer;
-
-    // ts-pdf sets pointer-events:none on every annotation icon unless the
-    // (editing) "annotation" mode is active, which we deliberately disable
-    // above to block creating/editing annotations. That also blocks reading
-    // them, so we re-enable hit-testing on just the icons here, without
-    // touching the mode (the editing toolbar/buttons stay fully disabled).
-    const style = document.createElement("style");
-    style.textContent = `
-      .annotation-controls, .annotation-controls * {
-        pointer-events: auto !important;
-      }
-      .annotation-controls {
-        cursor: pointer;
-      }
-    `;
-    container.shadowRoot?.appendChild(style);
-
-    return () => {
-      viewer.destroy();
-      wrapper.removeChild(container);
-      viewerRef.current = null;
-    };
-  }, []);
 
   const handleViewerError = useCallback((message: string) => {
     setError(message);
-    setActiveViewer(null);
-    setActiveFile(null);
+    setSource(null);
   }, []);
 
-  const openFile = async (file: File) => {
+  const openFile = useCallback(async (file: File) => {
     setError(null);
-    const kind = await detectFileType(file);
-
-    switch (kind) {
-      case "pdf":
-        try {
-          setNote(null);
-          await viewerRef.current?.openPdfAsync(file);
-          setActiveViewer("pdf");
-        } catch {
-          setError("No se pudo abrir el PDF.");
-        }
-        break;
-      case "pptx":
-      case "odp":
-      case "ppt-legacy":
-        setActiveFile(file);
-        setActiveViewer(kind);
-        break;
-      default:
+    setIsLoading(true);
+    try {
+      const detected = await detectFile(file);
+      if (detected.kind === "unsupported" || !detected.buffer) {
         setError(UNSUPPORTED_MESSAGE);
+        setSource(null);
+        return;
+      }
+      setSource({
+        kind: detected.kind,
+        name: file.name,
+        buffer: detected.buffer,
+        zip: detected.zip,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `No se pudo leer el archivo: ${err.message}`
+          : "No se pudo leer el archivo.",
+      );
+      setSource(null);
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }, []);
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) void openFile(file);
-  };
+  // Drag-and-drop is bound to the window rather than the dropzone element:
+  // once a viewer covers the screen the dropzone is hidden, and without a
+  // handler the browser's default action takes over and *navigates away* to
+  // the dropped file, losing the app. Handling it globally also means a new
+  // file can be dropped straight onto an open document to replace it.
+  useEffect(() => {
+    let dragDepth = 0;
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
+    const onDragEnter = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      dragDepth++;
+      setIsDragging(true);
+    };
+    const onDragOver = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    };
+    const onDragLeave = () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setIsDragging(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragDepth = 0;
+      setIsDragging(false);
+      const file = e.dataTransfer?.files?.[0];
+      if (file) void openFile(file);
+    };
 
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(false);
-  };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [openFile]);
+
+  useEffect(() => {
+    if (!source) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSource(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [source]);
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) void openFile(file);
+    // Cleared so picking the same file twice in a row still fires onChange.
     e.target.value = "";
   };
 
+  const pickFile = () => fileInputRef.current?.click();
+
   return (
     <div className="app">
-      <div ref={wrapperRef} className="pdf-container" />
+      <Suspense fallback={<div className="status-overlay">Cargando visor…</div>}>
+        {source?.kind === "pdf" && (
+          <PdfViewer buffer={source.buffer} onError={handleViewerError} />
+        )}
+        {source?.kind === "pptx" && source.zip && (
+          <PptxViewer
+            buffer={source.buffer}
+            zip={source.zip}
+            onError={handleViewerError}
+          />
+        )}
+        {source?.kind === "odp" && source.zip && (
+          <OdpViewer zip={source.zip} onError={handleViewerError} />
+        )}
+        {source?.kind === "ppt-legacy" && (
+          <LegacyPptViewer buffer={source.buffer} onError={handleViewerError} />
+        )}
+      </Suspense>
 
-      {activeViewer === "pptx" && activeFile && (
-        <PptxViewer file={activeFile} onError={handleViewerError} />
-      )}
-      {activeViewer === "odp" && activeFile && (
-        <OdpViewer file={activeFile} onError={handleViewerError} />
-      )}
-      {activeViewer === "ppt-legacy" && activeFile && (
-        <LegacyPptViewer file={activeFile} onError={handleViewerError} />
-      )}
-
-      {note && (
-        <div className="note-card">
+      {source && (
+        <div className="viewer-bar">
+          <span className="viewer-bar-name" title={source.name}>
+            {source.name}
+          </span>
+          <button type="button" className="viewer-bar-button" onClick={pickFile}>
+            Abrir otro
+          </button>
           <button
             type="button"
-            className="note-card-close"
-            onClick={() => setNote(null)}
-            aria-label="Cerrar"
+            className="viewer-bar-button viewer-bar-close"
+            onClick={() => setSource(null)}
+            aria-label="Cerrar documento"
+            title="Cerrar (Esc)"
           >
             ×
           </button>
-          <div className="note-card-author">{note.author}</div>
-          <div className="note-card-text">{note.text}</div>
         </div>
       )}
 
-      <div
-        className={`dropzone${activeViewer ? " hidden" : ""}${isDragging ? " dragging" : ""}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
+      {/* The whole panel is the control: no separate "choose a file" button,
+          so the home screen is just the one large drop target. Clicking
+          anywhere on it opens the (visually hidden) native file picker. */}
+      <button
+        type="button"
+        className={`dropzone${source ? " hidden" : ""}${isDragging ? " dragging" : ""}`}
+        onClick={pickFile}
       >
-        <div className="dropzone-label">DROP PDF HERE</div>
-        <button
-          type="button"
-          className="dropzone-button"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          Seleccionar archivo
-        </button>
-        {error && <div className="dropzone-error">{error}</div>}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf,.pdf,.pptx,.ppt,.odp,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,application/vnd.oasis.opendocument.presentation"
-          onChange={handleFileInputChange}
-          style={{ display: "none" }}
-        />
-      </div>
+        <span className="dropzone-label">DROP FILE HERE</span>
+        <span className="dropzone-hint">PDF · PPTX · PPT · ODP</span>
+        {error && <span className="dropzone-error">{error}</span>}
+      </button>
+
+      {isDragging && source && <div className="drop-overlay">Soltar para abrir</div>}
+      {isLoading && <div className="status-overlay">Leyendo archivo…</div>}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={FILE_ACCEPT}
+        onChange={handleFileInputChange}
+        className="visually-hidden"
+      />
     </div>
   );
 }

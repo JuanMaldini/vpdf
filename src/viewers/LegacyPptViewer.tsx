@@ -1,53 +1,44 @@
-import { useEffect, useState } from "react";
-import { extractLegacyPptText, readPowerPointStream } from "../lib/legacyPpt";
+import { useEffect, useMemo } from "react";
+import {
+  extractLegacyPptText,
+  readPowerPointStream,
+  type LegacyPptResult,
+} from "../lib/legacyPpt";
 import "./LegacyPptViewer.css";
 
 interface LegacyPptViewerProps {
-  file: File;
+  buffer: ArrayBuffer;
   onError: (message: string) => void;
 }
 
-interface Extracted {
-  slides: string[][];
-  unassigned: string[];
-}
+type Parsed =
+  | { ok: true; value: LegacyPptResult }
+  | { ok: false; message: string };
 
-function LegacyPptViewer({ file, onError }: LegacyPptViewerProps) {
-  const [result, setResult] = useState<Extracted | null>(null);
+function LegacyPptViewer({ buffer, onError }: LegacyPptViewerProps) {
+  // The whole extraction is synchronous CPU work on a buffer we already hold,
+  // so it is derived during render rather than round-tripped through state.
+  const parsed = useMemo<Parsed>(() => {
+    try {
+      return { ok: true, value: extractLegacyPptText(readPowerPointStream(buffer)) };
+    } catch (err) {
+      return {
+        ok: false,
+        message:
+          err instanceof Error
+            ? `No se pudo leer el .ppt: ${err.message}`
+            : "No se pudo leer el .ppt.",
+      };
+    }
+  }, [buffer]);
 
   useEffect(() => {
-    let cancelled = false;
-    file
-      .arrayBuffer()
-      .then((buffer) => {
-        const pptStream = readPowerPointStream(buffer);
-        return extractLegacyPptText(pptStream);
-      })
-      .then((extracted) => {
-        if (!cancelled) setResult(extracted);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          onError(
-            err instanceof Error
-              ? `No se pudo leer el .ppt: ${err.message}`
-              : "No se pudo leer el .ppt.",
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [file, onError]);
+    if (!parsed.ok) onError(parsed.message);
+  }, [parsed, onError]);
 
-  if (!result) {
-    return (
-      <div className="legacy-ppt-viewer legacy-ppt-viewer-loading">
-        Leyendo .ppt…
-      </div>
-    );
-  }
+  if (!parsed.ok) return null;
 
+  const result = parsed.value;
   const slidesWithText = result.slides.filter((s) => s.length > 0);
   const hasNothing = slidesWithText.length === 0 && result.unassigned.length === 0;
 

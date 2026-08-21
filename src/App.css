@@ -3,11 +3,6 @@
   inset: 0;
 }
 
-.pdf-container {
-  position: fixed;
-  inset: 0;
-}
-
 .dropzone {
   position: fixed;
   inset: 0;
@@ -16,13 +11,21 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 24px;
+  gap: 16px;
   background: #14151a;
   color: #e6e6e6;
   border: 3px dashed #3a3d46;
   margin: 16px;
   border-radius: 12px;
+  font: inherit;
+  cursor: pointer;
   transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: #5b8def;
+  outline: none;
 }
 
 .dropzone.hidden {
@@ -44,68 +47,104 @@
 
 .dropzone-hint {
   font-size: 0.95rem;
+  letter-spacing: 0.04em;
   color: #8a8d98;
-}
-
-.dropzone-button {
-  padding: 10px 22px;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #14151a;
-  background: #e6e6e6;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.dropzone-button:hover {
-  background: #ffffff;
 }
 
 .dropzone-error {
   color: #ff6b6b;
   font-size: 0.95rem;
+  text-align: center;
+  max-width: min(560px, 80vw);
 }
 
-.note-card {
+/* Sits above every viewer so there is always a way back to the dropzone —
+   without it, opening a file was a one-way trip. */
+.viewer-bar {
   position: fixed;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  z-index: 20;
-  width: min(420px, calc(100% - 32px));
-  max-height: 260px;
-  overflow-y: auto;
-  padding: 16px 40px 16px 18px;
-  background: rgba(20, 21, 26, 0.98);
+  top: 12px;
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 14px;
+  background: rgba(20, 21, 26, 0.92);
   border: 1px solid #3a3d46;
-  border-radius: 10px;
+  border-radius: 999px;
   color: #e6e6e6;
-  font-size: 0.9rem;
-  line-height: 1.4;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 0.85rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
 }
 
-.note-card-close {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  background: none;
+.viewer-bar-name {
+  max-width: 30vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #b9bcc6;
+}
+
+.viewer-bar-button {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font: inherit;
+  color: #e6e6e6;
+  background: #2a2d36;
   border: none;
-  color: #e6e6e6;
-  font-size: 1.3rem;
-  line-height: 1;
+  border-radius: 999px;
   cursor: pointer;
-  padding: 4px;
 }
 
-.note-card-author {
-  font-weight: 700;
-  margin-bottom: 4px;
+.viewer-bar-button:hover {
+  background: #3a3d46;
+}
+
+.viewer-bar-close {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+/* Drop feedback for when a viewer already covers the dropzone. */
+.drop-overlay {
+  position: fixed;
+  inset: 16px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   color: #f2f2f2;
+  background: rgba(20, 21, 26, 0.75);
+  border: 3px dashed #5b8def;
+  border-radius: 12px;
 }
 
-.note-card-text {
-  white-space: pre-wrap;
-  word-break: break-word;
+.status-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 21, 26, 0.8);
+  color: #e6e6e6;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

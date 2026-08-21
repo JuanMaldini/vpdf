@@ -1,0 +1,47 @@
+.pdf-container {
+  position: fixed;
+  inset: 0;
+}
+
+.note-card {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: min(420px, calc(100% - 32px));
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 16px 40px 16px 18px;
+  background: rgba(20, 21, 26, 0.98);
+  border: 1px solid #3a3d46;
+  border-radius: 10px;
+  color: #e6e6e6;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.note-card-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: #e6e6e6;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.note-card-author {
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #f2f2f2;
+}
+
+.note-card-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
