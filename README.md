@@ -1,32 +1,50 @@
-# React + TypeScript + Vite
+# vpdf
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Visor de documentos 100% en el navegador: se arrastra un archivo y se muestra.
+Nada se sube a ningún servidor — todo el parseo y el renderizado ocurren en la
+pestaña del usuario.
 
-Currently, two official plugins are available:
+## Formatos soportados
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+| Formato | Motor | Qué se ve |
+| --- | --- | --- |
+| **PDF** | [`ts-pdf`](https://github.com/yermolim/ts-pdf) (pdf.js) | Render completo. Al hacer clic en una anotación se abre su nota (autor + texto) en una tarjeta. Crear/editar anotaciones está deshabilitado. |
+| **PPTX** | [`pptx-preview`](https://www.npmjs.com/package/pptx-preview) | Render completo (texto, imágenes, tablas, formas, gráficos). Las notas del orador se extraen aparte y se muestran en un panel lateral. |
+| **ODP** | Parser propio (`src/lib/odf.ts`) | Reconstrucción por geometría: cada elemento se posiciona en % del tamaño de página real del master. Se recuperan texto, listas, tablas e imágenes. **No** se reproduce el estilo (fuentes, colores, rellenos, bordes). |
+| **PPT** (97-2003) | Extractor propio (`src/lib/legacyPpt.ts`) | Solo texto, best-effort. El contenedor binario OLE/CFB no tiene ninguna librería JS que lo parsee del todo, así que se recorre el stream de records y se agrupa el texto por diapositiva. Sin imágenes, formas ni diseño. |
 
-## React Compiler
+El tipo se detecta por **firma binaria**, no por extensión ni MIME
+(`src/lib/fileType.ts`). PPTX y ODP son ambos ZIP, así que se distinguen
+mirando dentro del contenedor.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Uso
 
-## Expanding the Oxlint configuration
+- Clic en el panel o arrastrar un archivo sobre él para abrirlo.
+- **Esc** cierra el documento y vuelve a la pantalla inicial.
+- Una vez abierto un documento, el drag & drop queda desactivado.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Desarrollo
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev      # servidor de desarrollo
+npm run build    # tsc -b && vite build
+npm run lint     # oxlint
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+`public/pdf.worker.min.mjs` es el worker de pdf.js que usa ts-pdf; su versión
+debe coincidir con la de la dependencia `ts-pdf`.
+
+Hay archivos de prueba reales en `test/` (PDF, PPTX y ODP).
+
+## Notas de arquitectura
+
+- **El archivo se lee una sola vez.** `detectFile()` devuelve el `ArrayBuffer`
+  y, para los formatos ZIP, la instancia de `JSZip` ya inflada; los visores la
+  reutilizan en lugar de volver a leer y descomprimir el archivo.
+- **Cada visor es un chunk aparte** (`React.lazy`). Las dependencias pesadas
+  (pdf.js, pptx-preview + echarts, cfb) solo se descargan cuando se abre ese
+  formato, así que el bundle inicial es ~90 kB gzip en vez de ~850 kB.
+- **Limitación conocida:** `pptx-preview` renderiza de forma síncrona en el
+  hilo principal, así que un PPTX grande (~10 MB) congela la pestaña unos
+  segundos mientras construye el DOM de las diapositivas.
