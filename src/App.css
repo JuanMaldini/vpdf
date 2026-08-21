@@ -1,0 +1,68 @@
+.app {
+  position: fixed;
+  inset: 0;
+}
+
+.pdf-container {
+  position: fixed;
+  inset: 0;
+}
+
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: #14151a;
+  color: #e6e6e6;
+  border: 3px dashed #3a3d46;
+  margin: 16px;
+  border-radius: 12px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.dropzone.hidden {
+  display: none;
+}
+
+.dropzone.dragging {
+  border-color: #5b8def;
+  background: #191c24;
+}
+
+.dropzone-label {
+  font-size: clamp(1.5rem, 4vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: #f2f2f2;
+}
+
+.dropzone-hint {
+  font-size: 0.95rem;
+  color: #8a8d98;
+}
+
+.dropzone-button {
+  padding: 10px 22px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #14151a;
+  background: #e6e6e6;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.dropzone-button:hover {
+  background: #ffffff;
+}
+
+.dropzone-error {
+  color: #ff6b6b;
+  font-size: 0.95rem;
+}
