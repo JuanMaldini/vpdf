@@ -78,25 +78,33 @@ function App() {
     }
   }, []);
 
-  // Drag-and-drop is bound to the window rather than the dropzone element:
-  // once a viewer covers the screen the dropzone is hidden, and without a
-  // handler the browser's default action takes over and *navigates away* to
-  // the dropped file, losing the app. Handling it globally also means a new
-  // file can be dropped straight onto an open document to replace it.
+  // Drag-and-drop is bound to the window rather than the dropzone element,
+  // because the default browser action on a dropped file is to *navigate
+  // away* to it, losing the app — and that has to be suppressed everywhere,
+  // including over an open document where the dropzone no longer exists.
+  //
+  // Dropping only opens a file on the home screen. Once a document is
+  // loaded, drops are swallowed (no overlay, no replace); "Abrir otro" is
+  // the deliberate way to switch files.
+  const dropEnabled = source === null;
+
   useEffect(() => {
     let dragDepth = 0;
 
+    const carriesFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+
     const onDragEnter = (e: DragEvent) => {
-      if (!e.dataTransfer?.types.includes("Files")) return;
+      if (!dropEnabled || !carriesFiles(e)) return;
       dragDepth++;
       setIsDragging(true);
     };
     const onDragOver = (e: DragEvent) => {
-      if (!e.dataTransfer?.types.includes("Files")) return;
+      if (!carriesFiles(e)) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
+      e.dataTransfer!.dropEffect = dropEnabled ? "copy" : "none";
     };
     const onDragLeave = () => {
+      if (!dropEnabled) return;
       dragDepth = Math.max(0, dragDepth - 1);
       if (dragDepth === 0) setIsDragging(false);
     };
@@ -104,6 +112,7 @@ function App() {
       e.preventDefault();
       dragDepth = 0;
       setIsDragging(false);
+      if (!dropEnabled) return;
       const file = e.dataTransfer?.files?.[0];
       if (file) void openFile(file);
     };
@@ -118,7 +127,7 @@ function App() {
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [openFile]);
+  }, [openFile, dropEnabled]);
 
   useEffect(() => {
     if (!source) return;
@@ -159,26 +168,6 @@ function App() {
         )}
       </Suspense>
 
-      {source && (
-        <div className="viewer-bar">
-          <span className="viewer-bar-name" title={source.name}>
-            {source.name}
-          </span>
-          <button type="button" className="viewer-bar-button" onClick={pickFile}>
-            Abrir otro
-          </button>
-          <button
-            type="button"
-            className="viewer-bar-button viewer-bar-close"
-            onClick={() => setSource(null)}
-            aria-label="Cerrar documento"
-            title="Cerrar (Esc)"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
       {/* The whole panel is the control: no separate "choose a file" button,
           so the home screen is just the one large drop target. Clicking
           anywhere on it opens the (visually hidden) native file picker. */}
@@ -192,7 +181,6 @@ function App() {
         {error && <span className="dropzone-error">{error}</span>}
       </button>
 
-      {isDragging && source && <div className="drop-overlay">Soltar para abrir</div>}
       {isLoading && <div className="status-overlay">Leyendo archivo…</div>}
 
       <input
